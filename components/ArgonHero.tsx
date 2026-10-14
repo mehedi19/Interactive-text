@@ -1,11 +1,11 @@
 "use client";
 
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Inter } from "next/font/google";
 
 const inter = Inter({
   subsets: ["latin"],
-  weight: ["900"],
+  weight: ["800", "900"],
   display: "swap",
 });
 
@@ -24,51 +24,36 @@ const FRAGMENT_SHADER = `precision highp float;
   uniform sampler2D u_trailTexture;
   uniform vec2 u_resolution;
   uniform vec2 u_mouse;
+  uniform vec2 u_mouseVel;
   uniform float u_time;
-
-  // Live tunable uniforms
-  uniform float u_frostOpacity;
-  uniform float u_edgeSmoke;
-  uniform float u_rimHighlight;
-  uniform float u_warpForce;
-  uniform float u_turbulenceSpeed;
-  uniform float u_noiseScale;
+  uniform float u_distortion;
+  uniform float u_frostiness;
   uniform float u_grainAmount;
-  uniform vec3 u_colorDeep;
-  uniform vec3 u_colorMid;
-  uniform vec3 u_colorBright;
+  uniform float u_glowIntensity;
 
   vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
   vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-  vec3 permute(vec3 x) { return mod289(((x * 34.0) + 1.0) * x); }
+  vec3 permute(vec3 x) { return mod289(((x*34.0)+1.0)*x); }
 
   float snoise(vec2 v) {
-    const vec4 C = vec4(
-      0.211324865405187,
-      0.366025403784439,
-      -0.577350269189626,
-      0.024390243902439
-    );
+    const vec4 C = vec4(0.211324865405187, 0.366025403784439,
+             -0.577350269189626, 0.024390243902439);
     vec2 i  = floor(v + dot(v, C.yy));
     vec2 x0 = v - i + dot(i, C.xx);
     vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
     vec4 x12 = x0.xyxy + C.xxzz;
     x12.xy -= i1;
     i = mod289(i);
-    vec3 p = permute(
-      permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0)
-    );
-    vec3 m = max(
-      0.5 - vec3(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)),
-      0.0
-    );
-    m = m * m;
-    m = m * m;
+    vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0))
+      + i.x + vec3(0.0, i1.x, 1.0));
+    vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+    m = m*m;
+    m = m*m;
     vec3 x = 2.0 * fract(p * C.www) - 1.0;
     vec3 h = abs(x) - 0.5;
     vec3 ox = floor(x + 0.5);
     vec3 a0 = x - ox;
-    m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
+    m *= 1.79284291400159 - 0.85373472095314 * (a0*a0 + h*h);
     vec3 g;
     g.x  = a0.x  * x0.x  + h.x  * x0.y;
     g.yz = a0.yz * x12.xz + h.yz * x12.yw;
@@ -78,19 +63,17 @@ const FRAGMENT_SHADER = `precision highp float;
   float fbm(vec2 p) {
     float value = 0.0;
     float amplitude = 0.5;
-    vec2 shift = vec2(100.0);
-    // Rotated octave matrix prevents axial grid/banding artifacts
-    mat2 rot = mat2(cos(0.5), sin(0.5), -sin(0.5), cos(0.5));
+    float frequency = 1.0;
     for (int i = 0; i < 4; i++) {
-      value += amplitude * snoise(p);
-      p = rot * p * 2.02 + shift;
+      value += amplitude * snoise(p * frequency);
+      p *= 2.03;
       amplitude *= 0.5;
     }
     return value;
   }
 
   float hash(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    vec3 p3  = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
   }
@@ -101,153 +84,154 @@ const FRAGMENT_SHADER = `precision highp float;
     vec2 aspectUV = vec2(uv.x * aspect, uv.y);
     vec2 mouseAspect = vec2(u_mouse.x * aspect, u_mouse.y);
 
-    // 1. Sample smooth 2D fluid velocity trail buffer
+    // 1. Sample 2D velocity & dissipation trail buffer
     vec4 trail = texture2D(u_trailTexture, uv);
-    vec2 trailVel = (trail.rg - 0.5) * 2.0;
-    float trailEnergy = trail.b;
+    vec2 trailVelocity = (trail.rg - 0.5) * 2.0;
+    float trailStrength = trail.b;
 
     float distToMouse = length(aspectUV - mouseAspect);
-    float hoverGlow = smoothstep(0.42, 0.0, distToMouse);
+    float mouseProximity = smoothstep(0.45, 0.0, distToMouse);
 
-    // 2. Organic multi-octave Simplex FBM cloud drift (rotated to prevent scanline striping)
-    float t = u_time * u_turbulenceSpeed;
-    vec2 noiseCoord = aspectUV * u_noiseScale;
-    float n1 = fbm(noiseCoord + vec2(t * 0.22, -t * 0.17));
-    float n2 = fbm(noiseCoord * 1.85 - vec2(t * 0.19, t * 0.24) + vec2(n1 * 0.45));
-    float fineCloud = fbm(noiseCoord * 3.4 + vec2(-t * 0.15, t * 0.28) + trailVel * 1.5);
+    // 2. Compute Argon gaseous FBM turbulence & interactive vapor wake
+    float slowTime = u_time * 0.16;
+    float n1 = fbm(aspectUV * 2.5 + vec2(slowTime, -slowTime * 0.75));
+    float n2 = fbm(aspectUV * 5.4 - vec2(slowTime * 0.85, slowTime * 1.1) + n1 * 0.45);
 
-    // 3. Smooth gaseous UV displacement (ambient vapor + interactive cursor fluid wake)
-    vec2 smokeDisp = vec2(n1, n2) * (0.011 * u_edgeSmoke);
-    vec2 fluidDisp = trailVel * (0.068 * u_warpForce)
-                   + vec2(n2, -n1) * trailEnergy * (0.032 * u_warpForce);
-    vec2 sampleUV = clamp(uv + smokeDisp + fluidDisp, 0.002, 0.998);
+    vec2 ambientOffset = vec2(n1, n2) * 0.009 * u_frostiness;
+    vec2 interactiveOffset = trailVelocity * 0.072 * u_distortion 
+                           + vec2(n2, -n1) * trailStrength * 0.036 * u_distortion;
 
-    // 4. Isotropic 8-tap Poisson-style blur sampling on the text mask for silky, band-free edges
-    float blurRadius = (0.0045 * u_edgeSmoke) + (trailEnergy * 0.0085 * u_warpForce);
-    vec2 o1 = vec2( 0.9238,  0.3826) * blurRadius;
-    vec2 o2 = vec2(-0.9238, -0.3826) * blurRadius;
-    vec2 o3 = vec2( 0.3826, -0.9238) * blurRadius;
-    vec2 o4 = vec2(-0.3826,  0.9238) * blurRadius;
-    vec2 o5 = vec2( 0.7071,  0.7071) * blurRadius * 1.55;
-    vec2 o6 = vec2(-0.7071, -0.7071) * blurRadius * 1.55;
+    vec2 distortedUV = uv + ambientOffset + interactiveOffset;
 
-    vec4 c0 = texture2D(u_textTexture, sampleUV);
-    vec4 c1 = texture2D(u_textTexture, clamp(sampleUV + o1, 0.002, 0.998));
-    vec4 c2 = texture2D(u_textTexture, clamp(sampleUV + o2, 0.002, 0.998));
-    vec4 c3 = texture2D(u_textTexture, clamp(sampleUV + o3, 0.002, 0.998));
-    vec4 c4 = texture2D(u_textTexture, clamp(sampleUV + o4, 0.002, 0.998));
-    vec4 c5 = texture2D(u_textTexture, clamp(sampleUV + o5, 0.002, 0.998));
-    vec4 c6 = texture2D(u_textTexture, clamp(sampleUV + o6, 0.002, 0.998));
+    // 3. Multi-tap frosted aerogel sampling with chromatic dispersion
+    float spread = (0.0038 * u_frostiness) + (trailStrength * 0.010 * u_distortion);
+    vec2 dir1 = vec2(cos(n1 * 6.283), sin(n1 * 6.283)) * spread;
+    vec2 dir2 = vec2(cos(n2 * 6.283 + 2.1), sin(n2 * 6.283 + 2.1)) * spread * 1.45;
 
-    vec4 accum = c0 * 0.26 + (c1 + c2 + c3 + c4) * 0.135 + (c5 + c6) * 0.10;
+    vec4 centerSample = texture2D(u_textTexture, distortedUV);
+    vec4 tap1 = texture2D(u_textTexture, distortedUV + dir1);
+    vec4 tap2 = texture2D(u_textTexture, distortedUV - dir1);
+    vec4 tap3 = texture2D(u_textTexture, distortedUV + dir2);
+    vec4 tap4 = texture2D(u_textTexture, distortedUV - dir2);
 
-    // Directional bevel offset toward top-right solar light source
-    vec2 lightDir = normalize(vec2(0.76, -0.65)) * (0.008 + trailEnergy * 0.004);
-    vec4 lightSample = texture2D(u_textTexture, clamp(sampleUV + lightDir, 0.002, 0.998));
-    vec4 shadowSample = texture2D(u_textTexture, clamp(sampleUV - lightDir * 0.85, 0.002, 0.998));
+    // 3D inner bevel shift toward top-right solar light source
+    vec2 lightShift = normalize(vec2(0.78, -0.62)) * (0.0065 + trailStrength * 0.0055);
+    vec4 bevelSample = texture2D(u_textTexture, distortedUV + lightShift);
 
-    // Unpack channels: R = crisp glyph contour, G = medium frosted body, B = wide atmospheric mist
-    float coreField = accum.r;
-    float frostField = accum.g;
-    float mistField = accum.b;
+    float crispAlpha = (centerSample.r * 0.38 + (tap1.r + tap2.r + tap3.r + tap4.r) * 0.155);
+    float softBody   = (centerSample.g * 0.34 + (tap1.g + tap2.g + tap3.g + tap4.g) * 0.165);
+    float outerHalo  = (centerSample.b * 0.38 + (tap1.b + tap2.b + tap3.b + tap4.b) * 0.155);
 
-    // 5. Authentic Argon 4 Diagonal Atmospheric Background Gradient
-    // Deep Midnight Navy (bottom-left) -> Electric Royal Azure (center) -> Solar Icy Cyan (top-right)
-    vec2 sunPos = vec2(0.92, 0.06);
-    float diag = clamp(1.0 - ((1.0 - uv.x) * 0.56 + uv.y * 0.66), 0.0, 1.0);
-    float sunDist = length((uv - sunPos) * vec2(aspect * 0.82, 1.0));
-    float sunBloom = exp(-sunDist * 1.55);
+    // Smoky contour erosion (replicates the vaporized edges of the '4' in the reference image)
+    float edgeZone = crispAlpha * (1.0 - crispAlpha) * 4.0;
+    float wispNoise = fbm(aspectUV * 7.8 + trailVelocity * 2.8 + vec2(0.0, -u_time * 0.28));
+    float frostedGlyph = clamp(
+      mix(crispAlpha, softBody, 0.50 * u_frostiness) + edgeZone * wispNoise * (0.25 + trailStrength * 0.42),
+      0.0,
+      1.0
+    );
 
-    vec3 bg = mix(u_colorDeep, u_colorMid, smoothstep(0.02, 0.58, diag));
-    bg = mix(bg, u_colorBright, smoothstep(0.52, 0.98, diag));
-    bg = mix(bg, vec3(1.0, 1.0, 1.0), pow(sunBloom, 1.5) * 0.72);
+    // 4. Exact Argon 4 Diagonal Atmospheric Gradient
+    // Bottom-left (#010926 -> #041B5E) -> Center (#1D6CE0 -> #3A95F5) -> Top-Right (#D8F6FF -> #FFFFFF)
+    vec2 solarOrigin = vec2(0.90, 0.06);
+    float diag = clamp(1.0 - ((1.0 - uv.x) * 0.56 + uv.y * 0.68), 0.0, 1.0);
+    float solarGlow = exp(-length((uv - solarOrigin) * vec2(aspect * 0.82, 1.0)) * 1.5);
 
-    // Subtle atmospheric FBM cloud modulation in background
-    bg += vec3(0.04, 0.11, 0.22) * (n1 * 0.35 + n2 * 0.25);
+    vec3 cMidnight = vec3(0.004, 0.035, 0.149); // #010926
+    vec3 cSapphire = vec3(0.016, 0.106, 0.369); // #041B5E
+    vec3 cRoyal    = vec3(0.114, 0.424, 0.878); // #1D6CE0
+    vec3 cAzure    = vec3(0.227, 0.584, 0.961); // #3A95F5
+    vec3 cIceCyan  = vec3(0.847, 0.965, 1.000); // #D8F6FF
+    vec3 cSolar    = vec3(1.000, 1.000, 1.000); // #FFFFFF
 
-    // 6. Translucent Frosted Aerogel Glyph Shading (Key Fix: NO opaque white blowout!)
-    // Outer smoky boundary feathers smoothly with FBM cloud wisps
-    float contourBoundary = coreField * (1.0 - coreField) * 4.0;
-    float smokyErosion = (n1 * 0.5 + fineCloud * 0.5) * contourBoundary * (0.34 * u_edgeSmoke + trailEnergy * 0.45);
+    vec3 bgCol = mix(cMidnight, cSapphire, smoothstep(0.0, 0.30, diag));
+    bgCol = mix(bgCol, cRoyal, smoothstep(0.24, 0.58, diag));
+    bgCol = mix(bgCol, cAzure, smoothstep(0.50, 0.82, diag));
+    bgCol = mix(bgCol, cIceCyan, smoothstep(0.75, 0.98, diag));
+    bgCol = mix(bgCol, cSolar, pow(solarGlow, 1.45) * 0.82);
 
-    float glyphBody = smoothstep(0.08, 0.88, mix(coreField, frostField, 0.46) + smokyErosion);
-    float innerHollow = smoothstep(0.45, 0.96, coreField);
+    bgCol += vec3(0.14, 0.38, 0.68) * (trailStrength * 0.24 + mouseProximity * 0.12) * u_glowIntensity;
 
-    // 3D Inner Bevel Rim Highlight (brighter on edges facing the top-right light & along outer contour)
-    float directionalRim = clamp((coreField - lightSample.r) * 1.85, 0.0, 1.0) * glyphBody;
-    float backRim = clamp((coreField - shadowSample.r) * 1.35, 0.0, 1.0) * glyphBody;
-    float softEdgeRim = pow(contourBoundary, 0.85) * 0.62;
-    float totalRim = clamp((directionalRim * 0.75 + backRim * 0.35 + softEdgeRim * 0.65) * u_rimHighlight, 0.0, 1.0);
+    // 5. Frosted Aerogel Glyph Refraction & 3D Inner Bevel
+    float innerCore = smoothstep(0.32, 0.95, crispAlpha);
+    float rimHighlight = clamp((frostedGlyph - bevelSample.r * 0.66), 0.0, 1.0);
+    float innerCavity = edgeZone * (0.68 + 0.32 * n2);
 
-    // Internal cloudy density: edges are frostier, center is more translucent so background blue shines through
-    float internalCloud = 0.82 + 0.18 * (n2 * 0.6 + fineCloud * 0.4);
-    float bodyTranslucency = mix(
-      glyphBody * 0.82,
-      innerHollow * 0.48,
-      0.52
-    ) * u_frostOpacity * internalCloud;
+    // Subtle chromatic dispersion along the frosted rim
+    vec3 frostTint = mix(vec3(0.78, 0.91, 1.0), vec3(0.98, 0.995, 1.0), diag * 0.68 + 0.32);
+    frostTint.r += (tap1.r - tap2.r) * 0.12 * (1.0 + trailStrength);
+    frostTint.b += (tap2.r - tap1.r) * 0.16 * (1.0 + trailStrength);
 
-    // Frosted glass tint blends icy white with the underlying local sky gradient
-    vec3 refractedSky = mix(bg, u_colorBright, 0.58 + 0.22 * diag);
-    vec3 frostSurface = mix(refractedSky, vec3(0.95, 0.99, 1.0), 0.65);
+    float strokeDensity = mix(frostedGlyph * 0.78, innerCavity * 0.94 + innerCore * 0.50, 0.46);
+    vec3 glyphColor = mix(bgCol, frostTint, clamp(strokeDensity + rimHighlight * 0.40, 0.0, 0.95));
 
-    // Subtle chromatic dispersion when disturbed by mouse fluid wake
-    frostSurface.r += (c1.r - c2.r) * 0.14 * (0.4 + trailEnergy);
-    frostSurface.b += (c2.r - c1.r) * 0.18 * (0.4 + trailEnergy);
+    float interactiveSheen = (trailStrength * 0.58 + mouseProximity * 0.26) * frostedGlyph;
+    glyphColor += vec3(0.35, 0.70, 1.0) * outerHalo * 0.34 * u_glowIntensity;
+    glyphColor += vec3(0.94, 0.99, 1.0) * (rimHighlight * 0.30 + interactiveSheen * 0.48) * u_glowIntensity;
 
-    // Composite translucent frosted interior over the background
-    vec3 color = mix(bg, frostSurface, clamp(bodyTranslucency, 0.0, 0.86));
+    float finalMask = clamp(frostedGlyph + outerHalo * 0.22 * u_glowIntensity, 0.0, 1.0);
+    vec3 finalColor = mix(bgCol, glyphColor, finalMask);
 
-    // Add outer misty vapor aura & 3D specular rim sheen
-    float vaporHalo = clamp(mistField * 0.38 * u_edgeSmoke + trailEnergy * glyphBody * 0.32, 0.0, 1.0);
-    color += mix(u_colorMid, u_colorBright, 0.7) * vaporHalo * 0.36;
-    color += vec3(0.94, 0.99, 1.0) * totalRim * (0.42 + 0.35 * trailEnergy + 0.18 * hoverGlow);
+    // 6. Tactile High-Frequency Film Grain
+    float grain = hash(uv * u_resolution + vec2(fract(u_time * 19.0), fract(u_time * 37.0))) - 0.5;
+    float grainWeight = (0.058 + 0.026 * edgeZone) * u_grainAmount;
+    finalColor += vec3(grain * grainWeight);
 
-    // 7. High-frequency tactile film grain (matches Argon 4 reference texture)
-    float grain = hash(uv * u_resolution + vec2(fract(u_time * 17.3), fract(u_time * 31.7))) - 0.5;
-    float grainMask = (0.052 + 0.024 * contourBoundary) * u_grainAmount;
-    color += vec3(grain * grainMask);
-
-    gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+    gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), 1.0);
   }`;
 
 export interface ArgonHeroProps {
-  text?: string;
-  fontScale?: number;
-  letterSpacing?: number;
-  frostOpacity?: number;
-  edgeSmoke?: number;
-  rimHighlight?: number;
-  warpForce?: number;
-  warpRadius?: number;
-  turbulenceSpeed?: number;
-  noiseScale?: number;
-  grainAmount?: number;
-  particleCount?: number;
-  colorDeep?: [number, number, number];
-  colorMid?: [number, number, number];
-  colorBright?: [number, number, number];
+  initialText?: string;
+  initialDistortion?: number;
+  initialFrostiness?: number;
+  initialGrain?: number;
+  initialParticles?: number;
+  showControls?: boolean;
 }
 
 export default function ArgonHero({
-  text = "AI",
-  fontScale = 0.54,
-  letterSpacing = -0.04,
-  frostOpacity = 0.68,
-  edgeSmoke = 1.15,
-  rimHighlight = 1.05,
-  warpForce = 1.25,
-  warpRadius = 0.14,
-  turbulenceSpeed = 0.55,
-  noiseScale = 2.6,
-  grainAmount = 1.05,
-  particleCount = 190,
-  colorDeep = [0.0078, 0.0549, 0.2157],
-  colorMid = [0.1412, 0.4863, 0.902],
-  colorBright = [0.8941, 0.9765, 1],
+  initialText = "AI",
+  initialDistortion = 1.2,
+  initialFrostiness = 1.08,
+  initialGrain = 1,
+  initialParticles = 190,
+  showControls = true,
 }: ArgonHeroProps) {
   const glCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const particleCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const [text, setText] = useState(initialText);
+  const [distortion, setDistortion] = useState(initialDistortion);
+  const [frostiness, setFrostiness] = useState(initialFrostiness);
+  const [grainAmount, setGrainAmount] = useState(initialGrain);
+  const [particleCount, setParticleCount] = useState(initialParticles);
+  const [hudVisible, setHudVisible] = useState(showControls);
+
+  const stateRef = useRef({
+    text,
+    distortion,
+    frostiness,
+    grainAmount,
+    glowIntensity: 1.15,
+    particleCount,
+  });
+
+  useEffect(() => {
+    stateRef.current = {
+      text,
+      distortion,
+      frostiness,
+      grainAmount,
+      glowIntensity: 1.15,
+      particleCount,
+    };
+  }, [text, distortion, frostiness, grainAmount, particleCount]);
+
+  const updateTextTextureRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    updateTextTextureRef.current();
+  }, [text]);
 
   useEffect(() => {
     const glCanvas = glCanvasRef.current;
@@ -287,7 +271,7 @@ export default function ArgonHero({
     }
     const ripples: Ripple[] = [];
 
-    // 2. High-Resolution Offscreen Multi-Channel Gaussian Text Mask
+    // 2. Offscreen Typography Mask Canvas ("AI" in Inter 900 Black)
     const textCanvas = document.createElement("canvas");
     const textCtx = textCanvas.getContext("2d")!;
 
@@ -340,17 +324,12 @@ export default function ArgonHero({
       trailTexture: gl.getUniformLocation(program, "u_trailTexture"),
       resolution: gl.getUniformLocation(program, "u_resolution"),
       mouse: gl.getUniformLocation(program, "u_mouse"),
+      mouseVel: gl.getUniformLocation(program, "u_mouseVel"),
       time: gl.getUniformLocation(program, "u_time"),
-      frostOpacity: gl.getUniformLocation(program, "u_frostOpacity"),
-      edgeSmoke: gl.getUniformLocation(program, "u_edgeSmoke"),
-      rimHighlight: gl.getUniformLocation(program, "u_rimHighlight"),
-      warpForce: gl.getUniformLocation(program, "u_warpForce"),
-      turbulenceSpeed: gl.getUniformLocation(program, "u_turbulenceSpeed"),
-      noiseScale: gl.getUniformLocation(program, "u_noiseScale"),
+      distortion: gl.getUniformLocation(program, "u_distortion"),
+      frostiness: gl.getUniformLocation(program, "u_frostiness"),
       grainAmount: gl.getUniformLocation(program, "u_grainAmount"),
-      colorDeep: gl.getUniformLocation(program, "u_colorDeep"),
-      colorMid: gl.getUniformLocation(program, "u_colorMid"),
-      colorBright: gl.getUniformLocation(program, "u_colorBright"),
+      glowIntensity: gl.getUniformLocation(program, "u_glowIntensity"),
     };
 
     gl.uniform1i(uniforms.textTexture, 0);
@@ -366,40 +345,40 @@ export default function ArgonHero({
       textCtx.fillStyle = "rgb(0, 0, 0)";
       textCtx.fillRect(0, 0, tw, th);
 
-      const str = (text || "AI").slice(0, 8);
-      const lengthPenalty = str.length <= 2 ? 1.0 : 2.15 / str.length;
-      const fontSize = Math.min(tw * fontScale * lengthPenalty, th * 0.68);
+      const str = (stateRef.current.text || "AI").slice(0, 6);
+      const scaleFactor = str.length <= 2 ? 0.54 : str.length === 3 ? 0.42 : 0.32;
+      const fontSize = Math.min(tw * scaleFactor, th * 0.68);
 
       textCtx.font = `900 ${fontSize}px ${inter.style.fontFamily}, "Inter", sans-serif`;
       textCtx.textAlign = "center";
       textCtx.textBaseline = "middle";
       if ("letterSpacing" in textCtx) {
-        (textCtx as any).letterSpacing = `${letterSpacing}em`;
+        (textCtx as any).letterSpacing = "-0.05em";
       }
 
       const cx = tw * 0.5;
       const cy = th * 0.51;
 
-      // B channel: Wide gaseous vapor aura
+      // B channel: Wide atmospheric halo
       textCtx.save();
       textCtx.globalCompositeOperation = "lighter";
-      textCtx.filter = `blur(${Math.max(24, fontSize * 0.095)}px)`;
+      textCtx.filter = `blur(${Math.max(18, fontSize * 0.075)}px)`;
       textCtx.fillStyle = "rgb(0, 0, 255)";
       textCtx.fillText(str, cx, cy);
       textCtx.restore();
 
-      // G channel: Medium frosted aerogel body cushion
+      // G channel: Frosted aerogel bevel body
       textCtx.save();
       textCtx.globalCompositeOperation = "lighter";
-      textCtx.filter = `blur(${Math.max(10, fontSize * 0.036)}px)`;
+      textCtx.filter = `blur(${Math.max(7, fontSize * 0.025)}px)`;
       textCtx.fillStyle = "rgb(0, 255, 0)";
       textCtx.fillText(str, cx, cy);
       textCtx.restore();
 
-      // R channel: Smooth feathered core contour (avoids aliased pixel steps)
+      // R channel: Crisp inner contour core
       textCtx.save();
       textCtx.globalCompositeOperation = "lighter";
-      textCtx.filter = `blur(${Math.max(3.5, fontSize * 0.011)}px)`;
+      textCtx.filter = `blur(${Math.max(2, fontSize * 0.0055)}px)`;
       textCtx.fillStyle = "rgb(255, 0, 0)";
       textCtx.fillText(str, cx, cy);
       textCtx.restore();
@@ -408,6 +387,8 @@ export default function ArgonHero({
       gl.bindTexture(gl.TEXTURE_2D, textTexture);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, textCanvas);
     };
+
+    updateTextTextureRef.current = updateTextTexture;
 
     interface Particle {
       x: number;
@@ -418,22 +399,28 @@ export default function ArgonHero({
       alpha: number;
       phase: number;
       speed: number;
+      nearGlyph: boolean;
     }
     const particles: Particle[] = [];
 
     const initParticles = (count: number) => {
       particles.length = 0;
       for (let i = 0; i < count; i++) {
-        const nearGlyph = Math.random() < 0.68;
+        const nearGlyph = Math.random() < 0.65;
         particles.push({
-          x: nearGlyph ? width * (0.22 + Math.random() * 0.56) : Math.random() * width,
-          y: nearGlyph ? height * (0.18 + Math.random() * 0.64) : Math.random() * height,
-          vx: (Math.random() - 0.5) * 0.32,
-          vy: -Math.random() * 0.42 - 0.08,
-          size: Math.random() * 1.9 + 0.45,
-          alpha: Math.random() * 0.68 + 0.15,
+          x: nearGlyph
+            ? width * (0.22 + Math.random() * 0.56)
+            : Math.random() * width,
+          y: nearGlyph
+            ? height * (0.18 + Math.random() * 0.64)
+            : Math.random() * height,
+          vx: (Math.random() - 0.5) * 0.35,
+          vy: -Math.random() * 0.45 - 0.1,
+          size: Math.random() * 2.0 + 0.5,
+          alpha: Math.random() * 0.7 + 0.15,
           phase: Math.random() * Math.PI * 2,
           speed: Math.random() * 0.022 + 0.008,
+          nearGlyph,
         });
       }
     };
@@ -452,7 +439,7 @@ export default function ArgonHero({
       pCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       updateTextTexture();
-      initParticles(particleCount);
+      initParticles(stateRef.current.particleCount);
     };
 
     handleResize();
@@ -467,11 +454,11 @@ export default function ArgonHero({
         y: ny * TRAIL_RES,
         vx: Math.max(-1, Math.min(1, vx * 16)),
         vy: Math.max(-1, Math.min(1, vy * 16)),
-        radius: TRAIL_RES * warpRadius * scale,
+        radius: TRAIL_RES * 0.135 * scale,
         age: 0,
-        maxAge: 52,
+        maxAge: 48,
       });
-      if (ripples.length > 64) ripples.shift();
+      if (ripples.length > 60) ripples.shift();
     };
 
     const onPointerMove = (clientX: number, clientY: number) => {
@@ -482,8 +469,8 @@ export default function ArgonHero({
       mouse.tx = nx;
       mouse.ty = ny;
       const speed = Math.hypot(dx, dy);
-      if (speed > 0.0008) {
-        spawnRipple(nx, ny, dx, dy, Math.min(1.55, 0.78 + speed * 12));
+      if (speed > 0.001) {
+        spawnRipple(nx, ny, dx, dy, Math.min(1.5, 0.78 + speed * 12));
       }
     };
 
@@ -499,6 +486,7 @@ export default function ArgonHero({
 
     const animate = (now: number) => {
       const elapsed = (now - startTime) * 0.001;
+      const cfg = stateRef.current;
 
       mouse.x += (mouse.tx - mouse.x) * 0.14;
       mouse.y += (mouse.ty - mouse.y) * 0.14;
@@ -507,7 +495,7 @@ export default function ArgonHero({
       mouse.lx = mouse.x;
       mouse.ly = mouse.y;
 
-      trailCtx.fillStyle = "rgba(128, 128, 0, 0.078)";
+      trailCtx.fillStyle = "rgba(128, 128, 0, 0.082)";
       trailCtx.fillRect(0, 0, TRAIL_RES, TRAIL_RES);
 
       for (let i = ripples.length - 1; i >= 0; i--) {
@@ -518,17 +506,17 @@ export default function ArgonHero({
           continue;
         }
         const life = 1 - r.age / r.maxAge;
-        const rad = r.radius * (0.65 + (1 - life) * 0.82);
-        r.x += r.vx * 1.6;
-        r.y += r.vy * 1.6;
+        const rad = r.radius * (0.65 + (1 - life) * 0.78);
+        r.x += r.vx * 1.65;
+        r.y += r.vy * 1.65;
 
         const red = Math.floor(128 + r.vx * 127 * life);
         const green = Math.floor(128 + r.vy * 127 * life);
         const blue = Math.floor(255 * life);
 
         const grad = trailCtx.createRadialGradient(r.x, r.y, 0, r.x, r.y, rad);
-        grad.addColorStop(0, `rgba(${red}, ${green}, ${blue}, ${life * 0.56})`);
-        grad.addColorStop(0.5, `rgba(${red}, ${green}, ${Math.floor(blue * 0.5)}, ${life * 0.25})`);
+        grad.addColorStop(0, `rgba(${red}, ${green}, ${blue}, ${life * 0.58})`);
+        grad.addColorStop(0.5, `rgba(${red}, ${green}, ${Math.floor(blue * 0.5)}, ${life * 0.26})`);
         grad.addColorStop(1, "rgba(128, 128, 0, 0)");
 
         trailCtx.fillStyle = grad;
@@ -544,21 +532,20 @@ export default function ArgonHero({
       gl.useProgram(program);
       gl.uniform2f(uniforms.resolution, glCanvas.width, glCanvas.height);
       gl.uniform2f(uniforms.mouse, mouse.x, mouse.y);
+      gl.uniform2f(uniforms.mouseVel, mouse.vx, mouse.vy);
       gl.uniform1f(uniforms.time, elapsed);
-      gl.uniform1f(uniforms.frostOpacity, frostOpacity);
-      gl.uniform1f(uniforms.edgeSmoke, edgeSmoke);
-      gl.uniform1f(uniforms.rimHighlight, rimHighlight);
-      gl.uniform1f(uniforms.warpForce, warpForce);
-      gl.uniform1f(uniforms.turbulenceSpeed, turbulenceSpeed);
-      gl.uniform1f(uniforms.noiseScale, noiseScale);
-      gl.uniform1f(uniforms.grainAmount, grainAmount);
-      gl.uniform3f(uniforms.colorDeep, colorDeep[0], colorDeep[1], colorDeep[2]);
-      gl.uniform3f(uniforms.colorMid, colorMid[0], colorMid[1], colorMid[2]);
-      gl.uniform3f(uniforms.colorBright, colorBright[0], colorBright[1], colorBright[2]);
+      gl.uniform1f(uniforms.distortion, cfg.distortion);
+      gl.uniform1f(uniforms.frostiness, cfg.frostiness);
+      gl.uniform1f(uniforms.grainAmount, cfg.grainAmount);
+      gl.uniform1f(uniforms.glowIntensity, cfg.glowIntensity);
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
 
       pCtx.clearRect(0, 0, width, height);
+      if (particles.length !== cfg.particleCount) {
+        initParticles(cfg.particleCount);
+      }
+
       const mxPx = mouse.x * width;
       const myPx = mouse.y * height;
       const mvxPx = mouse.vx * width;
@@ -567,19 +554,20 @@ export default function ArgonHero({
       for (let i = 0; i < particles.length; i++) {
         const p = particles[i];
         p.phase += p.speed;
-        p.x += p.vx + Math.sin(p.phase) * 0.22;
-        p.y += p.vy + Math.cos(p.phase * 0.8) * 0.14;
+        p.x += p.vx + Math.sin(p.phase) * 0.24;
+        p.y += p.vy + Math.cos(p.phase * 0.8) * 0.15;
 
         const dx = p.x - mxPx;
         const dy = p.y - myPx;
         const distSq = dx * dx + dy * dy;
-        const radius = 210;
+        const radius = 200;
 
         if (distSq < radius * radius && distSq > 1) {
           const dist = Math.sqrt(distSq);
-          const force = (1 - dist / radius) * warpForce;
-          p.x += (dx / dist) * force * 2.0 + (-dy / dist) * force * 1.1 + mvxPx * force * 0.35;
-          p.y += (dy / dist) * force * 2.0 + (dx / dist) * force * 1.1 + mvyPx * force * 0.35;
+          const force = (1 - dist / radius) * cfg.distortion;
+          // Radial repulsion + tangential vortex swirl
+          p.x += (dx / dist) * force * 2.1 + (-dy / dist) * force * 1.15 + mvxPx * force * 0.35;
+          p.y += (dy / dist) * force * 2.1 + (dx / dist) * force * 1.15 + mvyPx * force * 0.35;
         }
 
         if (p.x < -10) p.x = width + 10;
@@ -605,37 +593,36 @@ export default function ArgonHero({
       window.removeEventListener("touchmove", onTouchMove);
       cancelAnimationFrame(animationFrameId);
     };
-  }, [
-    text,
-    fontScale,
-    letterSpacing,
-    frostOpacity,
-    edgeSmoke,
-    rimHighlight,
-    warpForce,
-    warpRadius,
-    turbulenceSpeed,
-    noiseScale,
-    grainAmount,
-    particleCount,
-    colorDeep,
-    colorMid,
-    colorBright,
-  ]);
+  }, []);
 
   return (
-    <section
-      className={`relative w-full h-screen overflow-hidden select-none bg-[#020E37] ${inter.className}`}
-    >
-      <canvas
-        ref={glCanvasRef}
-        className="absolute inset-0 w-full h-full block cursor-crosshair"
-      />
-      <canvas
-        ref={particleCanvasRef}
-        className="absolute inset-0 w-full h-full pointer-events-none"
-      />
-      <h1 className="sr-only">{text}</h1>
+    <section className={`relative w-full h-screen overflow-hidden select-none bg-[#010926] text-white ${inter.className}`}>
+      <canvas ref={glCanvasRef} className="absolute inset-0 w-full h-full block cursor-crosshair" />
+      <canvas ref={particleCanvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
+      <h1 className="sr-only">{text} — Argon 4 Interactive Hero</h1>
+
+      {hudVisible && (
+        <div className="relative z-10 flex items-center justify-between px-6 py-5 md:px-10">
+          <div className="flex items-center gap-2.5 px-3.5 py-1.5 rounded-full bg-white/10 backdrop-blur-md border border-white/20">
+            <span className="w-2 h-2 rounded-full bg-cyan-300 animate-pulse" />
+            <span className="text-xs font-semibold tracking-widest uppercase">Argon 4 // {text}</span>
+          </div>
+
+          <div className="flex items-center gap-2 bg-slate-950/40 backdrop-blur-md border border-white/15 rounded-full p-1">
+            {["AI", "4", "A4"].map((preset) => (
+              <button
+                key={preset}
+                onClick={() => setText(preset)}
+                className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
+                  text === preset ? "bg-white text-slate-950" : "text-white/80 hover:text-white"
+                }`}
+              >
+                {preset}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </section>
   );
 }

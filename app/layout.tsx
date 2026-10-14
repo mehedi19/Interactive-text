@@ -4,15 +4,15 @@ import "./globals.css";
 
 const inter = Inter({
   subsets: ["latin"],
-  weight: ["400", "700", "900"],
+  weight: ["400", "600", "800", "900"],
   variable: "--font-inter",
   display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "AI — Interactive Argon 4 Hero",
+  title: "Argon 4 AI — Interactive WebGL Fluid Hero",
   description:
-    "Interactive Argon 4 translucent frosted aerogel typography and WebGL fluid refraction.",
+    "Interactive Argon 4 style frosted aerogel typography and WebGL fluid refraction built with Next.js 14.",
 };
 
 export default function RootLayout({
@@ -22,7 +22,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={inter.variable}>
-      <body className="bg-[#020E37] text-white antialiased selection:bg-cyan-400/30">
+      <body className="bg-[#010926] text-white antialiased selection:bg-cyan-400/30">
         {children}
       </body>
     </html>
