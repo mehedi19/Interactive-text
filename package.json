@@ -1,6 +1,6 @@
 {
-  "name": "argon-4-ai-interactive-hero",
-  "version": "1.0.0",
+  "name": "argon-4-ai-clean-hero",
+  "version": "2.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -11,8 +11,7 @@
   "dependencies": {
     "next": "14.2.15",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "lucide-react": "^0.454.0"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/node": "^20.14.10",
