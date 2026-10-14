@@ -1,6 +1,6 @@
-# Argon 4 Style "AI" Interactive WebGL Hero (Next.js 14)
+#"AI" Interactive WebGL Hero (Next.js 14)
 
-An interactive WebGL fluid-refraction and frosted aerogel typography hero section inspired by Google's **Gemini 4 Argon** artwork. Built with **Next.js 14 (App Router)**, **TypeScript**, **Tailwind CSS**, and **Inter Black (900)**.
+An interactive WebGL fluid-refraction and frosted aerogel typography hero section inspired by Interactive **WebGL Text** artwork. Built with **Next.js 14 (App Router)**, **TypeScript**, **Tailwind CSS**, and **Inter Black (900)**.
 
 ## ✨ Features
 - **Exact Argon 4 Palette**: Deep midnight sapphire (`#010926`) to electric royal azure (`#1D6CE0`) to solar icy cyan-white (`#D8F6FF` / `#FFFFFF`).
